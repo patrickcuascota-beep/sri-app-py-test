@@ -47,8 +47,9 @@ jobs:
         path: gitops-repo
 
     - name: Actualizar etiqueta de imagen en el YAML de Kubernetes
+      working-directory: gitops-repo/k8s
       run: |
-        cd gitops-repo/k8s
+        # cd gitops-repo/k8s
         # Reemplaza la línea de la imagen vieja por la URL de la nueva imagen de AWS ECR
         sed -i "s|image: .*|image: ${{ env.NEW_IMAGE }}|g" deployment.yaml
 
