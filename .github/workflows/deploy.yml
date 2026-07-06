@@ -44,6 +44,7 @@ jobs:
       with:
         repository: 'patrickcuascota-beep/sri-config-gitops-test'
         token: ${{ secrets.GH_PAT }}
+        ref: 'master'
         path: gitops-repo
 
     - name: Actualizar etiqueta de imagen en el YAML de Kubernetes
