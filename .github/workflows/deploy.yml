@@ -1,0 +1,61 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'app.py' # Se dispara solo si modificas el archivo de la app
+
+jobs:
+  build-and-ship:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Clonar código fuente
+      uses: actions/checkout@v4
+
+    # 1. Conectarse a AWS de forma segura
+    - name: Configurar credenciales de AWS
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1 # Tu región de AWS
+
+    - name: Iniciar sesión en Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    # 2. Construir la imagen Docker usando el Hash del commit como versión única
+    - name: Compilar y subir Imagen a AWS ECR
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        ECR_REPOSITORY: mi-app-python # Debe coincidir con el nombre en AWS
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        echo "NEW_IMAGE=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_ENV
+
+    # 3. El truco GitOps: Modificar el otro repositorio de configuración
+    - name: Clonar repositorio GitOps
+      uses: actions/checkout@v4
+      with:
+        repository: 'patrickcuascota-beep/sri-config-gitops-test'
+        token: ${{ secrets.GH_PAT }}
+        path: gitops-repo
+
+    - name: Actualizar etiqueta de imagen en el YAML de Kubernetes
+      run: |
+        cd gitops-repo/k8s
+        # Reemplaza la línea de la imagen vieja por la URL de la nueva imagen de AWS ECR
+        sed -i "s|image: .*|image: ${{ env.NEW_IMAGE }}|g" deployment.yaml
+
+    - name: Confirmar cambios en GitOps
+      run: |
+        cd gitops-repo
+        git config --global user.email "patrick.cuascota@gmail.com"
+        git config --global user.name "patrickcuascota-beep"
+        git add k8s/deployment.yaml
+        git commit -m "ArgoCD Trigger: Actualizando imagen a version ${{ github.sha }}"
+        git push origin main
