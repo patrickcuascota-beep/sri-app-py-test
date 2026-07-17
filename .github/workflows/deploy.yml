@@ -1,4 +1,7 @@
-name: SRI - CI/CD Pipeline
+#
+# Archivo de flujo de trabajo (pipeline) de GitHub Actions para CI/CD en multicloud (AWS y Azure)
+#
+name: SRI - CI/CD Pipeline Multi-Cloud (AWS & Azure)
 
 on:
   push:
@@ -6,13 +9,39 @@ on:
     paths:
       - '**.py' # Se dispara solo si modificas el archivo de la app
 
+env:
+  # Variables de entorno para AWS
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: sri-app-py
+  # Variables de entorno para GitOps
+  IMAGE_NAME: sri-ms-ipy-app
+  REPOSITORY_NAME: 'patrickcuascota-beep/sri-config-gitops-test'
+  REF: 'master' # branch de GitOps
+
 jobs:
-  build-and-ship:
+  # Job 1: Se ejecuta para la integración con AWS
+  ci-cd-aws:
     runs-on: ubuntu-latest
 
     steps:
     - name: Clonar código fuente
       uses: actions/checkout@v4
+    
+    - name: Leer versión actual del proyecto
+      id: version
+      run: |
+        if [ -f VERSION ]; then
+          CURRENT_VERSION=$(cat VERSION)
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+        else
+          echo "current_version=1.0.0" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Instalar dependencias y ejecutar tests
+      run: |
+        set -e
+        pip install -r requirements.txt pytest pytest-cov
+        # pytest /tests/ -v --cov=application --cov-report=xml
 
     # 1. Conectarse a AWS de forma segura
     - name: Configurar credenciales de AWS
@@ -21,7 +50,7 @@ jobs:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-        aws-region: us-east-1 # Tu región de AWS
+        aws-region: ${{ env.AWS_REGION }} # Región de AWS
 
     - name: Iniciar sesión en Amazon ECR
       id: login-ecr
@@ -31,21 +60,21 @@ jobs:
     - name: Compilar y subir Imagen a AWS ECR
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        ECR_REPOSITORY: sri-app-py # Debe coincidir con el nombre en AWS
-        IMAGE_TAG: ${{ github.sha }}
+        ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }} # Debe coincidir con el nombre en AWS
+        IMAGE_TAG: ${{ github.sha }}-${{ steps.version.outputs.current_version }}
       run: |
         docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
         echo "NEW_IMAGE=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_ENV
 
-    # 3. El paso GitOps: Actualizar el repositorio de ArgoCD
+    # 3. El paso GitOps: Actualizar el repositorio de k8s - ArgoCD
     - name: Clonar repositorio GitOps
       uses: actions/checkout@v4
       with:
-        repository: 'patrickcuascota-beep/sri-config-gitops-test'
+        repository: ${{ env.REPOSITORY_NAME }}
         token: ${{ secrets.GH_PAT }}
-        ref: 'master'
-        path: gitops-repo
+        ref: ${{ env.REF }}
+        path: gitops-repo # Directorio donde se clonará el repositorio GitOps
 
     - name: Actualizar etiqueta de imagen en el YAML de Kubernetes
       working-directory: gitops-repo
@@ -58,11 +87,8 @@ jobs:
     - name: Confirmar cambios en GitOps
       working-directory: gitops-repo
       run: |
-        #cd gitops-repo
-        #git config --global user.email "patrick.cuascota@gmail.com"
-        #git config --global user.name "patrickcuascota-beep"
         git config --global user.name "GitHub Actions Bot"
         git config --global user.email "actions@github.com"
         git add k8s/deployment.yaml
-        git commit -m "ArgoCD Trigger: Actualizando imagen a version ${{ github.sha }} [skip ci]"
-        git push origin master
+        git commit -m "ArgoCD Trigger: Actualizando imagen a version ${{ github.sha }}-${{ steps.version.outputs.current_version }} [skip ci]"
+        git push origin ${{ env.REF }}
